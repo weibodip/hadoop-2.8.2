@@ -359,7 +359,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
    */
   private long getCPUQuota(Container container) {
     return getCPUPeriod() * (Runtime.getRuntime()
-        .availableProcessors()-2) * container.getResource().getVirtualCores() / Long
+        .availableProcessors() - 2) * container.getResource().getVirtualCores() / Long
         .parseLong(getConf().get("yarn.nodemanager.resource.cpu-vcores"));
   }
 
