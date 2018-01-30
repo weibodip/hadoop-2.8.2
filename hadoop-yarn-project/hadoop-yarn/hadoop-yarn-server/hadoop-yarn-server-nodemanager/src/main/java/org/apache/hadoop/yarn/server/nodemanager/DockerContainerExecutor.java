@@ -80,7 +80,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
   //launches in turn
   public static final String DOCKER_CONTAINER_EXECUTOR_SESSION_SCRIPT =
       "docker_container_executor_session";
-  public static final String DOCKER_IMAGE_NAME = "yarn_nodemanager_docker_container_executor_image-name";
+  public static final String DOCKER_IMAGE_NAME = "yarn_nodemanager_docker_container_executor_image_name";
   public static final String CPU_ISOLATE_ENABLE = "yarn_nodemanager_docker_container_executor_cpuisolate_enable";
 
   //This validates that the image is a proper docker image and would not crash
