@@ -358,8 +358,8 @@ public class DockerContainerExecutor extends ContainerExecutor {
    * period的n倍：  n=（系统最大逻辑核数-2）* 此container分配的vcore数/yarn每个NM的vcore总数 。-2为留给系统自身使用
    */
   private long getCPUQuota(Container container) {
-    return getCPUPeriod() * Runtime.getRuntime()
-        .availableProcessors() * container.getResource().getVirtualCores() / Long
+    return getCPUPeriod() * (Runtime.getRuntime()
+        .availableProcessors()-2) * container.getResource().getVirtualCores() / Long
         .parseLong(getConf().get("yarn.nodemanager.resource.cpu-vcores"));
   }
 
