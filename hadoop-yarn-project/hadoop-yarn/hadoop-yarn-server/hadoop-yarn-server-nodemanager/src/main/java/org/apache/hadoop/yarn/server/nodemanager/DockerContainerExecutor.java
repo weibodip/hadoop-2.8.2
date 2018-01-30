@@ -49,6 +49,7 @@ import org.apache.hadoop.util.Shell.ShellCommandExecutor;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.apache.hadoop.yarn.api.records.ContainerId;
+import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
@@ -68,10 +69,9 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 
 /**
- * This executor will launch and run tasks inside Docker containers. It
- * currently only supports simple authentication mode. It shares a lot of code
- * with the DefaultContainerExecutor (and it may make sense to pull out those
- * common pieces later).
+ * This executor will launch and run tasks inside Docker containers. It currently only supports
+ * simple authentication mode. It shares a lot of code with the DefaultContainerExecutor (and it may
+ * make sense to pull out those common pieces later).
  */
 public class DockerContainerExecutor extends ContainerExecutor {
 
@@ -84,6 +84,8 @@ public class DockerContainerExecutor extends ContainerExecutor {
   //launches in turn
   public static final String DOCKER_CONTAINER_EXECUTOR_SESSION_SCRIPT =
       "docker_container_executor_session";
+  public static final String DOCKER_IMAGE_NAME="image_name";
+  public static final String CPU_ISULATE_ENABLE="cpuisulate_enable";
 
   //This validates that the image is a proper docker image and would not crash
   //docker. The image name is not allowed to contain spaces. e.g.
@@ -95,6 +97,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
 
   private final FileContext lfs;
   private final Pattern dockerImagePattern;
+
 
   public DockerContainerExecutor() {
     try {
@@ -179,13 +182,13 @@ public class DockerContainerExecutor extends ContainerExecutor {
     //add a entry of image name for temporary use.
     if (Strings.isNullOrEmpty(containerImageName)) {
       containerImageName = container.getLaunchContext().getEnvironment()
-          .get("image_name");
+          .get(DOCKER_IMAGE_NAME);
     }
     if (LOG.isDebugEnabled()) {
       LOG.debug("containerImageName from launchContext: " + containerImageName);
     }
     Preconditions.checkArgument(!Strings.isNullOrEmpty(containerImageName),
-        "Container image must not be null");
+        "Container image must not be null, if you run a MR apps, specify  image_name=${imageName} in am,map,reduce env");
     containerImageName = containerImageName.replaceAll("['\"]", "");
 
     Preconditions.checkArgument(saneDockerImage(containerImageName), "Image: "
@@ -238,7 +241,8 @@ public class DockerContainerExecutor extends ContainerExecutor {
     //--net=host allows the container to take on the host's network stack
     //--name sets the Docker Container name to the YARN containerId string
     //-v is used to bind mount volumes for local, log and work dirs.
-    String commandStr = commands.append(dockerExecutor)
+
+    commands.append(dockerExecutor)
         .append(" ")
         .append("run")
         .append(" ")
@@ -246,13 +250,21 @@ public class DockerContainerExecutor extends ContainerExecutor {
         .append(" ")
         .append("--workdir=" + containerWorkDir.toUri().getPath())
         .append(" ")
-        .append(" --name " + containerIdStr)
+        .append(" --name " + containerIdStr);
+    if (!Strings.isNullOrEmpty(container.getLaunchContext().getEnvironment().get(CPU_ISULATE_ENABLE))&&container.getLaunchContext().getEnvironment().get(CPU_ISULATE_ENABLE)
+        .equalsIgnoreCase("true")) {
+      commands.append(" --cpu-period=" + getCPUPeriod())
+          .append(" --cpu-quota=" + this.getCPUQuota(container.getResource()));
+    }
+
+    commands
         .append(localDirMount)
         .append(logDirMount)
         .append(containerWorkDirMount)
         .append(" ")
-        .append(containerImageName)
-        .toString();
+        .append(containerImageName);
+    String commandStr = commands.toString();
+
     //Get the pid of the process which has been launched as a docker container
     //using docker inspect
     String dockerPidScript = "`" + dockerExecutor +
@@ -328,6 +340,20 @@ public class DockerContainerExecutor extends ContainerExecutor {
       }
     }
     return 0;
+  }
+
+  private long getCPUPeriod() {
+    return 1000000L;
+  }
+
+  private long getCPUQuota(Resource resource) {
+    return getCPUPeriod() * (long) resource.getVirtualCores();
+  }
+
+  private long getCPUQuota2(Container container) {
+    return getCPUPeriod() * container.getResource().getVirtualCores() * Runtime.getRuntime()
+        .availableProcessors() / Long
+        .parseLong(getConf().get("yarn.nodemanager.resource.cpu-vcores"));
   }
 
   @Override
@@ -460,8 +486,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
    * Send a specified signal to the specified pid
    *
    * @param pid the pid of the process [group] to signal.
-   * @param signal signal to send
-   * (for logging).
+   * @param signal signal to send (for logging).
    */
   protected void killContainer(String pid, Signal signal) throws IOException {
     new ShellCommandExecutor(Shell.getSignalKillCommand(signal.getValue(), pid))
@@ -497,7 +522,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
 
   /**
    * Converts a directory list to a docker mount string
-   * @param dirs
+   *
    * @return a string of mounts for docker
    */
   private String toMount(List<String> dirs) {
@@ -614,10 +639,8 @@ public class DockerContainerExecutor extends ContainerExecutor {
   }
 
   /**
-   * Initialize the local directories for a particular user.
-   * <ul>.mkdir
-   * <li>$local.dir/usercache/$user</li>
-   * </ul>
+   * Initialize the local directories for a particular user. <ul>.mkdir
+   * <li>$local.dir/usercache/$user</li> </ul>
    */
   void createUserLocalDirs(List<String> localDirs, String user)
       throws IOException {
@@ -642,12 +665,9 @@ public class DockerContainerExecutor extends ContainerExecutor {
 
 
   /**
-   * Initialize the local cache directories for a particular user.
-   * <ul>
-   * <li>$local.dir/usercache/$user</li>
-   * <li>$local.dir/usercache/$user/appcache</li>
-   * <li>$local.dir/usercache/$user/filecache</li>
-   * </ul>
+   * Initialize the local cache directories for a particular user. <ul>
+   * <li>$local.dir/usercache/$user</li> <li>$local.dir/usercache/$user/appcache</li>
+   * <li>$local.dir/usercache/$user/filecache</li> </ul>
    */
   void createUserCacheDirs(List<String> localDirs, String user)
       throws IOException {
@@ -690,11 +710,8 @@ public class DockerContainerExecutor extends ContainerExecutor {
   }
 
   /**
-   * Initialize the local directories for a particular user.
-   * <ul>
-   * <li>$local.dir/usercache/$user/appcache/$appid</li>
+   * Initialize the local directories for a particular user. <ul> <li>$local.dir/usercache/$user/appcache/$appid</li>
    * </ul>
-   * @param localDirs
    */
   void createAppDirs(List<String> localDirs, String user, String appId)
       throws IOException {
@@ -748,28 +765,23 @@ public class DockerContainerExecutor extends ContainerExecutor {
   }
 
   /**
-   * Permissions for user dir.
-   * $local.dir/usercache/$user
+   * Permissions for user dir. $local.dir/usercache/$user
    */
   static final short USER_PERM = (short) 0750;
   /**
-   * Permissions for user appcache dir.
-   * $local.dir/usercache/$user/appcache
+   * Permissions for user appcache dir. $local.dir/usercache/$user/appcache
    */
   static final short APPCACHE_PERM = (short) 0710;
   /**
-   * Permissions for user filecache dir.
-   * $local.dir/usercache/$user/filecache
+   * Permissions for user filecache dir. $local.dir/usercache/$user/filecache
    */
   static final short FILECACHE_PERM = (short) 0710;
   /**
-   * Permissions for user app dir.
-   * $local.dir/usercache/$user/appcache/$appId
+   * Permissions for user app dir. $local.dir/usercache/$user/appcache/$appId
    */
   static final short APPDIR_PERM = (short) 0710;
   /**
-   * Permissions for user log dir.
-   * $logdir/$user/$appId
+   * Permissions for user log dir. $logdir/$user/$appId
    */
   static final short LOGDIR_PERM = (short) 0710;
 
