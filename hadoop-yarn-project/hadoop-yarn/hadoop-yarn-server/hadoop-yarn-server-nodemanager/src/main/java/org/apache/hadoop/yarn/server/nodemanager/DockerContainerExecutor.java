@@ -247,8 +247,10 @@ public class DockerContainerExecutor extends ContainerExecutor {
         .append("--workdir=" + containerWorkDir.toUri().getPath())
         .append(" ")
         .append(" --name " + containerIdStr);
-
-    setCpuIsolate(commands, container);
+    if (Boolean.valueOf(container.getLaunchContext().getEnvironment().get(CPU_ISOLATE_ENABLE))) {
+      commands.append(" --cpu-period=" + getCPUPeriod())
+          .append(" --cpu-quota=" + getCPUQuota(container.getResource().getVirtualCores()));
+    }
 
     commands
         .append(localDirMount)
@@ -335,32 +337,26 @@ public class DockerContainerExecutor extends ContainerExecutor {
     return 0;
   }
 
-  /**
-   * 在配置了cpu隔离的情况下
-   *
-   * @param commands 拼命令的StringBuilder
-   */
-  private void setCpuIsolate(StringBuilder commands, Container container) {
-    if (!Strings
-        .isNullOrEmpty(container.getLaunchContext().getEnvironment().get(CPU_ISOLATE_ENABLE))
-        && container.getLaunchContext().getEnvironment().get(CPU_ISOLATE_ENABLE)
-        .equalsIgnoreCase("true")) {
-      commands.append(" --cpu-period=" + getCPUPeriod())
-          .append(" --cpu-quota=" + getCPUQuota(container));
-    }
-  }
 
   private long getCPUPeriod() {
     return 1000000L;
   }
 
   /**
-   * period的n倍：  n=（系统最大逻辑核数-2）* 此container分配的vcore数/yarn每个NM的vcore总数 。-2为留给系统自身使用
+   * this method return the --cpu-quota of docker command
+   *
+   * @param vcores vcores allocated to this container.
    */
-  private long getCPUQuota(Container container) {
-    return getCPUPeriod() * (Runtime.getRuntime()
-        .availableProcessors() - 2) * container.getResource().getVirtualCores() / Long
-        .parseLong(getConf().get("yarn.nodemanager.resource.cpu-vcores"));
+  private long getCPUQuota(long vcores) {
+    // the ratio of container vcores to NM's vcores.
+    double ratio = vcores / Long
+        .parseLong(getConf().get(YarnConfiguration.NM_VCORES)) / 1.0;
+    // cost of the real logical core of Machine . Reserved two for System
+    double realCores = (Runtime.getRuntime().availableProcessors() - 2) * ratio;
+    //cpu-quota
+    double cpuQuota = getCPUPeriod() * realCores;
+
+    return Double.valueOf(cpuQuota).longValue();
   }
 
   @Override
