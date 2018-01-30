@@ -84,8 +84,8 @@ public class DockerContainerExecutor extends ContainerExecutor {
   //launches in turn
   public static final String DOCKER_CONTAINER_EXECUTOR_SESSION_SCRIPT =
       "docker_container_executor_session";
-  public static final String DOCKER_IMAGE_NAME="image_name";
-  public static final String CPU_ISULATE_ENABLE="cpuisulate_enable";
+  public static final String DOCKER_IMAGE_NAME="yarn_nodemanager_docker_container_executor_image-name";
+  public static final String CPU_ISOLATE_ENABLE="yarn_nodemanager_docker_container_executor_cpuisolate_enable";
 
   //This validates that the image is a proper docker image and would not crash
   //docker. The image name is not allowed to contain spaces. e.g.
@@ -251,7 +251,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
         .append("--workdir=" + containerWorkDir.toUri().getPath())
         .append(" ")
         .append(" --name " + containerIdStr);
-    if (!Strings.isNullOrEmpty(container.getLaunchContext().getEnvironment().get(CPU_ISULATE_ENABLE))&&container.getLaunchContext().getEnvironment().get(CPU_ISULATE_ENABLE)
+    if (!Strings.isNullOrEmpty(container.getLaunchContext().getEnvironment().get(CPU_ISOLATE_ENABLE))&&container.getLaunchContext().getEnvironment().get(CPU_ISOLATE_ENABLE)
         .equalsIgnoreCase("true")) {
       commands.append(" --cpu-period=" + getCPUPeriod())
           .append(" --cpu-quota=" + this.getCPUQuota(container.getResource()));
