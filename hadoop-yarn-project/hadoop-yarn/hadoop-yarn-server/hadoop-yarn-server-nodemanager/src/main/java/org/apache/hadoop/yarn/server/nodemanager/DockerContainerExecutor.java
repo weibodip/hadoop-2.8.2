@@ -18,6 +18,10 @@ package org.apache.hadoop.yarn.server.nodemanager;
 import static org.apache.hadoop.fs.CreateFlag.CREATE;
 import static org.apache.hadoop.fs.CreateFlag.OVERWRITE;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Joiner;
+import com.google.common.base.Preconditions;
+import com.google.common.base.Strings;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
@@ -34,7 +38,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
-
 import org.apache.commons.lang.math.RandomUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -49,7 +52,6 @@ import org.apache.hadoop.util.Shell.ShellCommandExecutor;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.apache.hadoop.yarn.api.records.ContainerId;
-import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
@@ -61,12 +63,6 @@ import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerSignalContext
 import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerStartContext;
 import org.apache.hadoop.yarn.server.nodemanager.executor.DeletionAsUserContext;
 import org.apache.hadoop.yarn.server.nodemanager.executor.LocalizerStartContext;
-import org.apache.hadoop.yarn.util.ConverterUtils;
-
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
-import com.google.common.base.Strings;
 
 /**
  * This executor will launch and run tasks inside Docker containers. It currently only supports
@@ -84,8 +80,8 @@ public class DockerContainerExecutor extends ContainerExecutor {
   //launches in turn
   public static final String DOCKER_CONTAINER_EXECUTOR_SESSION_SCRIPT =
       "docker_container_executor_session";
-  public static final String DOCKER_IMAGE_NAME="yarn_nodemanager_docker_container_executor_image-name";
-  public static final String CPU_ISOLATE_ENABLE="yarn_nodemanager_docker_container_executor_cpuisolate_enable";
+  public static final String DOCKER_IMAGE_NAME = "yarn_nodemanager_docker_container_executor_image-name";
+  public static final String CPU_ISOLATE_ENABLE = "yarn_nodemanager_docker_container_executor_cpuisolate_enable";
 
   //This validates that the image is a proper docker image and would not crash
   //docker. The image name is not allowed to contain spaces. e.g.
@@ -188,7 +184,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
       LOG.debug("containerImageName from launchContext: " + containerImageName);
     }
     Preconditions.checkArgument(!Strings.isNullOrEmpty(containerImageName),
-        "Container image must not be null, if you run a MR apps, specify  image_name=${imageName} in am,map,reduce env");
+        "Container image must not be null");
     containerImageName = containerImageName.replaceAll("['\"]", "");
 
     Preconditions.checkArgument(saneDockerImage(containerImageName), "Image: "
@@ -251,11 +247,8 @@ public class DockerContainerExecutor extends ContainerExecutor {
         .append("--workdir=" + containerWorkDir.toUri().getPath())
         .append(" ")
         .append(" --name " + containerIdStr);
-    if (!Strings.isNullOrEmpty(container.getLaunchContext().getEnvironment().get(CPU_ISOLATE_ENABLE))&&container.getLaunchContext().getEnvironment().get(CPU_ISOLATE_ENABLE)
-        .equalsIgnoreCase("true")) {
-      commands.append(" --cpu-period=" + getCPUPeriod())
-          .append(" --cpu-quota=" + this.getCPUQuota(container.getResource()));
-    }
+
+    setCpuIsolate(commands, container);
 
     commands
         .append(localDirMount)
@@ -342,17 +335,31 @@ public class DockerContainerExecutor extends ContainerExecutor {
     return 0;
   }
 
+  /**
+   * 在配置了cpu隔离的情况下
+   *
+   * @param commands 拼命令的StringBuilder
+   */
+  private void setCpuIsolate(StringBuilder commands, Container container) {
+    if (!Strings
+        .isNullOrEmpty(container.getLaunchContext().getEnvironment().get(CPU_ISOLATE_ENABLE))
+        && container.getLaunchContext().getEnvironment().get(CPU_ISOLATE_ENABLE)
+        .equalsIgnoreCase("true")) {
+      commands.append(" --cpu-period=" + getCPUPeriod())
+          .append(" --cpu-quota=" + getCPUQuota(container));
+    }
+  }
+
   private long getCPUPeriod() {
     return 1000000L;
   }
 
-  private long getCPUQuota(Resource resource) {
-    return getCPUPeriod() * (long) resource.getVirtualCores();
-  }
-
-  private long getCPUQuota2(Container container) {
-    return getCPUPeriod() * container.getResource().getVirtualCores() * Runtime.getRuntime()
-        .availableProcessors() / Long
+  /**
+   * period的n倍：  n=（系统最大逻辑核数-2）* 此container分配的vcore数/yarn每个NM的vcore总数 。-2为留给系统自身使用
+   */
+  private long getCPUQuota(Container container) {
+    return getCPUPeriod() * Runtime.getRuntime()
+        .availableProcessors() * container.getResource().getVirtualCores() / Long
         .parseLong(getConf().get("yarn.nodemanager.resource.cpu-vcores"));
   }
 
