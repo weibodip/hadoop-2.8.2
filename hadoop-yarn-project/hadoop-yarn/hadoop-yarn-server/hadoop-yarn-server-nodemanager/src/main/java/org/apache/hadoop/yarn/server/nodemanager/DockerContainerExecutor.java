@@ -348,13 +348,11 @@ public class DockerContainerExecutor extends ContainerExecutor {
    */
   private long getCPUQuota(long vcores) {
     // the ratio of container vcores to NM's vcores.
-    double ratio = vcores / Long
-        .parseLong(getConf().get(YarnConfiguration.NM_VCORES)) / 1.0;
+    double ratio = vcores / 1.0 / getConf().getLong(YarnConfiguration.NM_VCORES, 0);
     // cost of the real logical core of Machine . Reserved two for System
     double realCores = (Runtime.getRuntime().availableProcessors() - 2) * ratio;
     //cpu-quota
     double cpuQuota = getCPUPeriod() * realCores;
-
     return Double.valueOf(cpuQuota).longValue();
   }
 
