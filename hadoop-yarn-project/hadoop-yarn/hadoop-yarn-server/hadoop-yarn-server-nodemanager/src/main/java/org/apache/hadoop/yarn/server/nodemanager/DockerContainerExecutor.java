@@ -250,7 +250,10 @@ public class DockerContainerExecutor extends ContainerExecutor {
       commands.append(" --cpu-period=" + getCPUPeriod())
           .append(" --cpu-quota=" + getCPUQuota(container.getResource().getVirtualCores()));
     }
-
+    String containerExtraDir=container.getLaunchContext().getEnvironment().get("docker.container.extra.dir");
+    if(org.apache.commons.lang.StringUtils.isNotEmpty(containerExtraDir)){
+      commands.append(toMount(Collections.singletonList(containerExtraDir)));
+    }
     commands
         .append(localDirMount)
         .append(logDirMount)
@@ -290,7 +293,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
           containerIdStr, userName, pidFile, this.getConf());
       if (LOG.isDebugEnabled()) {
         LOG.debug("launchContainer: " + commandStr + " " +
-            Joiner.on(" ").join(command));
+            Joiner.on("-----------------").join(command));
       }
       shExec = new ShellCommandExecutor(
           command,
