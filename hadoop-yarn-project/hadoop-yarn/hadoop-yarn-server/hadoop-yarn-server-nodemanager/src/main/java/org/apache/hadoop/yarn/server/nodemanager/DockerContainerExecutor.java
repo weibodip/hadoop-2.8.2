@@ -622,6 +622,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
       DataOutputStream out = null;
       PrintStream pout = null;
       String user = System.getenv("USER");
+
       try {
         out = lfs.create(sessionScriptPath, EnumSet.of(CREATE, OVERWRITE));
         pout = new PrintStream(out, false, "UTF-8");
