@@ -83,6 +83,8 @@ public class DockerContainerExecutor extends ContainerExecutor {
       "yarn_nodemanager_docker_container_executor_image_name";
   public static final String CPU_ISOLATE_ENABLE =
       "yarn_nodemanager_docker_container_executor_cpuisolate_enable";
+  public static final String MEM_ISOLATE_ENABLE =
+      "yarn_nodemanager_docker_container_executor_memoryisolate_enable";
   // This validates that the image is a proper docker image and would not crash
   // docker. The image name is not allowed to contain spaces. e.g.
   // registry.somecompany.com:9999/containername:0.1 or
@@ -253,6 +255,10 @@ public class DockerContainerExecutor extends ContainerExecutor {
       commands
           .append(" --cpu-period=" + getCPUPeriod())
           .append(" --cpu-quota=" + getCPUQuota(container.getResource().getVirtualCores()));
+    }
+    if (Boolean.valueOf(container.getLaunchContext().getEnvironment().get(MEM_ISOLATE_ENABLE))) {
+      commands.append(" --memory " + container.getResource().getMemorySize() + "m");
+      commands.append(" --memory-swappiness=0");
     }
     String containerExtraDir =
         container.getLaunchContext().getEnvironment().get("docker.container.extra.dir");
@@ -650,7 +656,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
                   + launchDst.toUri().getPath().toString()
                   + "\"";
         }
-        LOG.debug("LaunchContainerCommand:" + launchContainerCommand);
+        LOG.info("LaunchContainerCommand:" + launchContainerCommand);
         pout.println(launchContainerCommand);
       } finally {
         IOUtils.cleanup(LOG, pout, out);
