@@ -85,6 +85,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
       "yarn_nodemanager_docker_container_executor_cpuisolate_enable";
   public static final String MEM_ISOLATE_ENABLE =
       "yarn_nodemanager_docker_container_executor_memoryisolate_enable";
+  public static final String DOCKER_EXTRA_DIR = "yarn_nodemanager_docker_container_extra_dir";
   // This validates that the image is a proper docker image and would not crash
   // docker. The image name is not allowed to contain spaces. e.g.
   // registry.somecompany.com:9999/containername:0.1 or
@@ -262,6 +263,9 @@ public class DockerContainerExecutor extends ContainerExecutor {
     }
     String containerExtraDir =
         container.getLaunchContext().getEnvironment().get("docker.container.extra.dir");
+    if (org.apache.commons.lang.StringUtils.isEmpty(containerExtraDir)) {
+      containerExtraDir = container.getLaunchContext().getEnvironment().get(DOCKER_EXTRA_DIR);
+    }
     if (org.apache.commons.lang.StringUtils.isNotEmpty(containerExtraDir)) {
       commands.append(toMount(Collections.singletonList(containerExtraDir)));
     }
