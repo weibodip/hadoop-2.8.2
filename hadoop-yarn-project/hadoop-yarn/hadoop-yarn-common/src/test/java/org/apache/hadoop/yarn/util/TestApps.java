@@ -31,13 +31,13 @@ public class TestApps {
   public void testSetEnvFromInputString() {
     Map<String, String> environment = new HashMap<String, String>();
     environment.put("JAVA_HOME", "/path/jdk");
-    String goodEnv = "a1=1,b_2=2,_c=3,d=4,e=,f_win=%JAVA_HOME%"
+    String goodEnv = "a1=1,b_2=2,_c=3,docker_container_extra_dir=/mount,e=,f_win=%JAVA_HOME%"
         + ",g_nix=$JAVA_HOME";
     Apps.setEnvFromInputString(environment, goodEnv, File.pathSeparator);
     assertEquals("1", environment.get("a1"));
     assertEquals("2", environment.get("b_2"));
     assertEquals("3", environment.get("_c"));
-    assertEquals("4", environment.get("d"));
+    assertEquals("/mount", environment.get("docker_container_extra_dir"));
     assertEquals("", environment.get("e"));
     if (Shell.WINDOWS) {
       assertEquals("$JAVA_HOME", environment.get("g_nix"));

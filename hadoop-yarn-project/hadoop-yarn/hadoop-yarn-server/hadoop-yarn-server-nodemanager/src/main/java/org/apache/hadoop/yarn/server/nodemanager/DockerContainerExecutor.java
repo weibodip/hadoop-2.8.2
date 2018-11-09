@@ -278,9 +278,9 @@ public class DockerContainerExecutor extends ContainerExecutor {
     String commandStr = commands.toString();
 
     // Get the pid of the process which has been launched as a docker container
-    // using docker inspect
-    String dockerPidScript =
-        "`" + dockerExecutor + " inspect --format {{.State.Pid}} " + containerIdStr + "`";
+    // using docker inspect   eg：/usr/bin/docker inspect --format {{.State.Pid}}
+    // container_e14_1536072244069_0014_01_000001`
+    String dockerPidScript = containerIdStr;
 
     // Create new local launch wrapper script
     LocalWrapperScriptBuilder sb =
@@ -301,7 +301,8 @@ public class DockerContainerExecutor extends ContainerExecutor {
       lfs.setPermission(launchDst, ContainerExecutor.TASK_LAUNCH_SCRIPT_PERMISSION);
       lfs.setPermission(sb.getWrapperScriptPath(), ContainerExecutor.TASK_LAUNCH_SCRIPT_PERMISSION);
 
-      // Setup command to run
+      // Setup command to run eg:nice -n -0 bash
+      // /data0/yarn/nm-local-dir/usercache/hdfs/appcache/application_1536072244069_0013/container_e14_1536072244069_0013_02_000001/docker_container_executor.sh
       String[] command =
           getRunCommand(
               sb.getWrapperScriptPath().toString(),
@@ -484,6 +485,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
       }
       throw e;
     }
+    LOG.debug("self define stop success with signal " + signal.getValue());
     return true;
   }
 
@@ -501,15 +503,19 @@ public class DockerContainerExecutor extends ContainerExecutor {
    * @return boolean true if the process is alive
    */
   @VisibleForTesting
-  public static boolean containerIsAlive(String pid) throws IOException {
+  public boolean containerIsAlive(String pid) throws IOException {
+    ShellCommandExecutor shellexec = new ShellCommandExecutor(getContainerLiveCommand(pid));
+    shellexec.execute();
+    String output = shellexec.getOutput().trim();
+    LOG.debug(pid + " output:" + output);
     try {
-      new ShellCommandExecutor(Shell.getCheckProcessIsAliveCommand(pid)).execute();
-      // successful execution means process is alive
-      return true;
-    } catch (Shell.ExitCodeException e) {
-      // failure (non-zero exit code) means process is not alive
+      if (Long.parseLong(output) != 0L) {
+        return true;
+      }
+    } catch (Exception e) {
       return false;
     }
+    return false;
   }
 
   /**
@@ -519,7 +525,33 @@ public class DockerContainerExecutor extends ContainerExecutor {
    * @param signal signal to send (for logging).
    */
   protected void killContainer(String pid, Signal signal) throws IOException {
-    new ShellCommandExecutor(Shell.getSignalKillCommand(signal.getValue(), pid)).execute();
+    new ShellCommandExecutor(getContainerStopCommand(signal.getValue(), pid)).execute();
+  }
+
+  private String[] getContainerStopCommand(int code, String containerId) {
+    String dockerExecutor =
+        getConf()
+            .get(
+                YarnConfiguration.NM_DOCKER_CONTAINER_EXECUTOR_EXEC_NAME,
+                YarnConfiguration.NM_DEFAULT_DOCKER_CONTAINER_EXECUTOR_EXEC_NAME);
+    if (code == 15) {
+      LOG.debug("exec docker stop " + containerId);
+      return new String[] {dockerExecutor, "stop", containerId};
+    } else {
+      LOG.debug("exec docker kill " + containerId);
+      return new String[] {dockerExecutor, "kill", containerId};
+    }
+  }
+
+  private String[] getContainerLiveCommand(String containerId) {
+    String dockerExecutor =
+        getConf()
+            .get(
+                YarnConfiguration.NM_DOCKER_CONTAINER_EXECUTOR_EXEC_NAME,
+                YarnConfiguration.NM_DEFAULT_DOCKER_CONTAINER_EXECUTOR_EXEC_NAME);
+    return new String[] {
+      "bash", "-c", dockerExecutor + " inspect --format {{.State.Pid}} " + containerId
+    };
   }
 
   @Override
