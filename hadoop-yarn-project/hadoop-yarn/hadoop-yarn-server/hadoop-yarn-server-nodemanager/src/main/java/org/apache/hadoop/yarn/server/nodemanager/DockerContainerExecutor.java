@@ -505,10 +505,11 @@ public class DockerContainerExecutor extends ContainerExecutor {
   @VisibleForTesting
   public boolean containerIsAlive(String pid) throws IOException {
     ShellCommandExecutor shellexec = new ShellCommandExecutor(getContainerLiveCommand(pid));
-    shellexec.execute();
-    String output = shellexec.getOutput().trim();
-    LOG.debug(pid + " output:" + output);
     try {
+      shellexec.execute();
+      String output = shellexec.getOutput().trim();
+      LOG.debug(pid + " output:" + output);
+
       if (Long.parseLong(output) != 0L) {
         return true;
       }
