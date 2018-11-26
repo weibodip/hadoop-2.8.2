@@ -79,6 +79,8 @@ public class DockerContainerExecutor extends ContainerExecutor {
   // launches in turn
   public static final String DOCKER_CONTAINER_EXECUTOR_SESSION_SCRIPT =
       "docker_container_executor_session";
+  public static final String DOCKER_CONTAINER_EXECUTOR_REAL_SESSION_SCRIPT =
+      "docker_container_executor_real_session";
   public static final String DOCKER_IMAGE_NAME =
       "yarn_nodemanager_docker_container_executor_image_name";
   public static final String CPU_ISOLATE_ENABLE =
@@ -470,17 +472,17 @@ public class DockerContainerExecutor extends ContainerExecutor {
     String user = ctx.getUser();
     String pid = ctx.getPid();
     Signal signal = ctx.getSignal();
-
+    String containerId = ctx.getContainer().getContainerId().toString();
     if (LOG.isDebugEnabled()) {
       LOG.debug("Sending signal " + signal.getValue() + " to pid " + pid + " as user " + user);
     }
-    if (!containerIsAlive(pid)) {
+    if (!containerIsAlive(containerId)) {
       return false;
     }
     try {
-      killContainer(pid, signal);
+      killContainer(pid, signal, ctx.getContainer().getContainerId().toString());
     } catch (IOException e) {
-      if (!containerIsAlive(pid)) {
+      if (!containerIsAlive(containerId)) {
         return false;
       }
       throw e;
@@ -491,23 +493,21 @@ public class DockerContainerExecutor extends ContainerExecutor {
 
   @Override
   public boolean isContainerAlive(ContainerLivenessContext ctx) throws IOException {
-    String pid = ctx.getPid();
-
-    return containerIsAlive(pid);
+    return containerIsAlive(ctx.getContainer().getContainerId().toString());
   }
 
   /**
    * Returns true if the process with the specified pid is alive.
    *
-   * @param pid String pid
+   * @param containerId String pid
    * @return boolean true if the process is alive
    */
   @VisibleForTesting
-  public boolean containerIsAlive(String pid) throws IOException {
-    ShellCommandExecutor shellexec = new ShellCommandExecutor(getContainerLiveCommand(pid));
+  public boolean containerIsAlive(String containerId) throws IOException {
+    ShellCommandExecutor shellexec = new ShellCommandExecutor(getContainerLiveCommand(containerId));
     shellexec.execute();
     String output = shellexec.getOutput().trim();
-    LOG.debug(pid + " output:" + output);
+    LOG.debug(containerId + " output:" + output);
     try {
       if (Long.parseLong(output) != 0L) {
         return true;
@@ -524,11 +524,16 @@ public class DockerContainerExecutor extends ContainerExecutor {
    * @param pid the pid of the process [group] to signal.
    * @param signal signal to send (for logging).
    */
-  protected void killContainer(String pid, Signal signal) throws IOException {
-    new ShellCommandExecutor(getContainerStopCommand(signal.getValue(), pid)).execute();
+  protected void killContainer(String pid, Signal signal, String containerId) throws IOException {
+    ShellCommandExecutor stopExec =
+        new ShellCommandExecutor(getContainerStopCommand(signal.getValue(), containerId, pid));
+    if (LOG.isDebugEnabled()) {
+      LOG.debug(stopExec.toString());
+    }
+    stopExec.execute();
   }
 
-  private String[] getContainerStopCommand(int code, String containerId) {
+  private String[] getContainerStopCommand(int code, String containerId, String pid) {
     String dockerExecutor =
         getConf()
             .get(
@@ -536,7 +541,9 @@ public class DockerContainerExecutor extends ContainerExecutor {
                 YarnConfiguration.NM_DEFAULT_DOCKER_CONTAINER_EXECUTOR_EXEC_NAME);
     if (code == 15) {
       LOG.debug("exec docker stop " + containerId);
-      return new String[] {dockerExecutor, "stop", containerId};
+      return new String[] {
+        "bash", "-c", dockerExecutor + " exec " + containerId + " /bin/pkill -15 -P " + pid
+      };
     } else {
       LOG.debug("exec docker kill " + containerId);
       return new String[] {dockerExecutor, "kill", containerId};
@@ -628,6 +635,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
   private final class UnixLocalWrapperScriptBuilder extends LocalWrapperScriptBuilder {
 
     private final Path sessionScriptPath;
+    private final Path realSessionScriptPath;
     private final String dockerCommand;
     private final String dockerPidScript;
 
@@ -640,11 +648,16 @@ public class DockerContainerExecutor extends ContainerExecutor {
           new Path(
               containerWorkDir,
               Shell.appendScriptExtension(DOCKER_CONTAINER_EXECUTOR_SESSION_SCRIPT));
+      this.realSessionScriptPath =
+          new Path(
+              containerWorkDir,
+              Shell.appendScriptExtension(DOCKER_CONTAINER_EXECUTOR_REAL_SESSION_SCRIPT));
     }
 
     @Override
     public void writeLocalWrapperScript(Path launchDst, Path pidFile) throws IOException {
       writeSessionScript(launchDst, pidFile);
+      writeRealSessionScript(launchDst, pidFile);
       super.writeLocalWrapperScript(launchDst, pidFile);
     }
 
@@ -660,6 +673,25 @@ public class DockerContainerExecutor extends ContainerExecutor {
       pout.println("exit $rc");
     }
 
+    public void writeRealSessionScript(Path launchDst, Path pidFile) throws IOException {
+      DataOutputStream out = null;
+      PrintStream pout = null;
+      try {
+        out = lfs.create(realSessionScriptPath, EnumSet.of(CREATE, OVERWRITE));
+        pout = new PrintStream(out, false, "UTF-8");
+        // We need to do a move as writing to a file is not atomic
+        // Process reading a file being written to may get garbled data
+        // hence write pid to tmp file first followed by a mv
+        pout.println("#!/usr/bin/env bash");
+        pout.println("echo $$ > " + pidFile.toString() + ".tmp");
+        pout.println("/bin/mv -f " + pidFile.toString() + ".tmp " + pidFile);
+        pout.println("exec /bin/bash \"" + launchDst.toUri().getPath().toString() + "\"");
+      } finally {
+        IOUtils.cleanup(LOG, pout, out);
+      }
+      lfs.setPermission(realSessionScriptPath, ContainerExecutor.TASK_LAUNCH_SCRIPT_PERMISSION);
+    }
+
     private void writeSessionScript(Path launchDst, Path pidFile) throws IOException {
       DataOutputStream out = null;
       PrintStream pout = null;
@@ -672,12 +704,10 @@ public class DockerContainerExecutor extends ContainerExecutor {
         // hence write pid to tmp file first followed by a mv
         pout.println("#!/usr/bin/env bash");
         pout.println();
-        pout.println("echo " + dockerPidScript + " > " + pidFile.toString() + ".tmp");
-        pout.println("/bin/mv -f " + pidFile.toString() + ".tmp " + pidFile);
         String launchContainerCommand;
         // if user is root , not use self define launchCommand
         String rootLaunchCommand =
-            dockerCommand + " bash \"" + launchDst.toUri().getPath().toString() + "\"";
+            dockerCommand + " bash \"" + realSessionScriptPath.toUri().getPath().toString() + "\"";
         if (user.equals("root")) {
           launchContainerCommand = rootLaunchCommand;
         } else {
@@ -689,7 +719,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
                   + " && su "
                   + user
                   + " -c "
-                  + launchDst.toUri().getPath().toString()
+                  + realSessionScriptPath.toUri().getPath().toString()
                   + "\"";
         }
         LOG.info("LaunchContainerCommand:" + launchContainerCommand);
