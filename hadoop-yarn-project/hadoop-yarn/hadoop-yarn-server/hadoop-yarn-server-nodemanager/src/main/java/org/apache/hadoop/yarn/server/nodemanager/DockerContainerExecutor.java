@@ -49,6 +49,7 @@ import org.apache.hadoop.fs.UnsupportedFileSystemException;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.util.Shell;
+import org.apache.hadoop.util.Shell.ExitCodeException;
 import org.apache.hadoop.util.Shell.ShellCommandExecutor;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
@@ -79,8 +80,8 @@ public class DockerContainerExecutor extends ContainerExecutor {
   // launches in turn
   public static final String DOCKER_CONTAINER_EXECUTOR_SESSION_SCRIPT =
       "docker_container_executor_session";
-  public static final String DOCKER_CONTAINER_EXECUTOR_REAL_SESSION_SCRIPT =
-      "docker_container_executor_real_session";
+  public static final String DOCKER_CONTAINER_EXECUTOR_RUN_SCRIPT =
+      "docker_container_executor_run_session";
   public static final String DOCKER_IMAGE_NAME =
       "yarn_nodemanager_docker_container_executor_image_name";
   public static final String CPU_ISOLATE_ENABLE =
@@ -428,9 +429,9 @@ public class DockerContainerExecutor extends ContainerExecutor {
     // dump debugging information if configured
     if (getConf() != null
         && getConf()
-            .getBoolean(
-                YarnConfiguration.NM_LOG_CONTAINER_DEBUG_INFO,
-                YarnConfiguration.DEFAULT_NM_LOG_CONTAINER_DEBUG_INFO)) {
+        .getBoolean(
+            YarnConfiguration.NM_LOG_CONTAINER_DEBUG_INFO,
+            YarnConfiguration.DEFAULT_NM_LOG_CONTAINER_DEBUG_INFO)) {
       sb.copyDebugInformation(
           new Path(ContainerLaunch.CONTAINER_SCRIPT),
           new Path(logDir, ContainerLaunch.CONTAINER_SCRIPT));
@@ -504,15 +505,18 @@ public class DockerContainerExecutor extends ContainerExecutor {
    */
   @VisibleForTesting
   public boolean containerIsAlive(String containerId) throws IOException {
+    boolean isAlive;
     ShellCommandExecutor shellexec = new ShellCommandExecutor(getContainerLiveCommand(containerId));
-    shellexec.execute();
-    String output = shellexec.getOutput().trim();
-    LOG.debug(containerId + " output:" + output);
     try {
-      if (Long.parseLong(output) != 0L) {
+      shellexec.execute();
+      String output = shellexec.getOutput().trim();
+      LOG.debug(containerId + " output:" + output);
+      if (Integer.parseInt(output) != 0) {
         return true;
       }
-    } catch (Exception e) {
+    } catch (ExitCodeException e) {
+      return false;
+    } catch (NumberFormatException e) {
       return false;
     }
     return false;
@@ -540,13 +544,17 @@ public class DockerContainerExecutor extends ContainerExecutor {
                 YarnConfiguration.NM_DOCKER_CONTAINER_EXECUTOR_EXEC_NAME,
                 YarnConfiguration.NM_DEFAULT_DOCKER_CONTAINER_EXECUTOR_EXEC_NAME);
     if (code == 15) {
-      LOG.debug("exec docker stop " + containerId);
-      return new String[] {
-        "bash", "-c", dockerExecutor + " exec " + containerId + " /bin/pkill -15 -P " + pid
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Terminating " + containerId);
+      }
+      return new String[]{
+          "bash", "-c", dockerExecutor + " exec " + containerId + " /bin/pkill -15 -P " + pid
       };
     } else {
-      LOG.debug("exec docker kill " + containerId);
-      return new String[] {dockerExecutor, "kill", containerId};
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("exec docker kill " + containerId);
+      }
+      return new String[]{dockerExecutor, "kill", containerId};
     }
   }
 
@@ -556,8 +564,8 @@ public class DockerContainerExecutor extends ContainerExecutor {
             .get(
                 YarnConfiguration.NM_DOCKER_CONTAINER_EXECUTOR_EXEC_NAME,
                 YarnConfiguration.NM_DEFAULT_DOCKER_CONTAINER_EXECUTOR_EXEC_NAME);
-    return new String[] {
-      "bash", "-c", dockerExecutor + " inspect --format {{.State.Pid}} " + containerId
+    return new String[]{
+        "bash", "-c", dockerExecutor + " inspect --format {{.State.Pid}} " + containerId
     };
   }
 
@@ -627,7 +635,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
 
     protected LocalWrapperScriptBuilder(Path containerWorkDir) {
       this.wrapperScriptPath =
-          new Path(containerWorkDir, Shell.appendScriptExtension(DOCKER_CONTAINER_EXECUTOR_SCRIPT));
+          new Path(containerWorkDir, Shell.appendScriptExtension(DOCKER_CONTAINER_EXECUTOR_RUN_SCRIPT));
     }
   }
 
@@ -635,7 +643,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
   private final class UnixLocalWrapperScriptBuilder extends LocalWrapperScriptBuilder {
 
     private final Path sessionScriptPath;
-    private final Path realSessionScriptPath;
+    private final Path executorScriptPath;
     private final String dockerCommand;
     private final String dockerPidScript;
 
@@ -648,36 +656,56 @@ public class DockerContainerExecutor extends ContainerExecutor {
           new Path(
               containerWorkDir,
               Shell.appendScriptExtension(DOCKER_CONTAINER_EXECUTOR_SESSION_SCRIPT));
-      this.realSessionScriptPath =
+      this.executorScriptPath =
           new Path(
               containerWorkDir,
-              Shell.appendScriptExtension(DOCKER_CONTAINER_EXECUTOR_REAL_SESSION_SCRIPT));
+              Shell.appendScriptExtension(DOCKER_CONTAINER_EXECUTOR_SCRIPT));
     }
 
     @Override
     public void writeLocalWrapperScript(Path launchDst, Path pidFile) throws IOException {
       writeSessionScript(launchDst, pidFile);
-      writeRealSessionScript(launchDst, pidFile);
+      writeExecutorScript(launchDst, pidFile);
       super.writeLocalWrapperScript(launchDst, pidFile);
     }
 
     @Override
     public void writeLocalWrapperScript(Path launchDst, Path pidFile, PrintStream pout) {
-      String exitCodeFile = ContainerLaunch.getExitCodeFile(pidFile.toString());
-      String tmpFile = exitCodeFile + ".tmp";
+      String user = System.getenv("USER");
       pout.println("#!/usr/bin/env bash");
-      pout.println("bash \"" + sessionScriptPath.toString() + "\"");
-      pout.println("rc=$?");
-      pout.println("echo $rc > \"" + tmpFile + "\"");
-      pout.println("mv -f \"" + tmpFile + "\" \"" + exitCodeFile + "\"");
-      pout.println("exit $rc");
+      pout.println();
+      String launchContainerCommand;
+      // if user is root , not use self define launchCommand
+      String rootLaunchCommand =
+          dockerCommand + " bash \"" + executorScriptPath.toUri().getPath().toString() + "\"";
+      if (user.equals("root")) {
+        launchContainerCommand = rootLaunchCommand;
+      } else {
+        String addUserCommand = null;
+        try {
+          addUserCommand = getAddUserCommand(user);
+        } catch (IOException e) {
+          LOG.error(e.getMessage());
+        }
+        launchContainerCommand =
+            dockerCommand
+                + " bash -c \""
+                + addUserCommand
+                + " && su "
+                + user
+                + " -c "
+                + executorScriptPath.toUri().getPath().toString()
+                + "\"";
+      }
+      LOG.info("LaunchContainerCommand:" + launchContainerCommand);
+      pout.println(launchContainerCommand);
     }
 
-    public void writeRealSessionScript(Path launchDst, Path pidFile) throws IOException {
+    public void writeSessionScript(Path launchDst, Path pidFile) throws IOException {
       DataOutputStream out = null;
       PrintStream pout = null;
       try {
-        out = lfs.create(realSessionScriptPath, EnumSet.of(CREATE, OVERWRITE));
+        out = lfs.create(sessionScriptPath, EnumSet.of(CREATE, OVERWRITE));
         pout = new PrintStream(out, false, "UTF-8");
         // We need to do a move as writing to a file is not atomic
         // Process reading a file being written to may get garbled data
@@ -689,46 +717,34 @@ public class DockerContainerExecutor extends ContainerExecutor {
       } finally {
         IOUtils.cleanup(LOG, pout, out);
       }
-      lfs.setPermission(realSessionScriptPath, ContainerExecutor.TASK_LAUNCH_SCRIPT_PERMISSION);
+      lfs.setPermission(sessionScriptPath, ContainerExecutor.TASK_LAUNCH_SCRIPT_PERMISSION);
     }
 
-    private void writeSessionScript(Path launchDst, Path pidFile) throws IOException {
+    private void writeExecutorScript(Path launchDst, Path pidFile) throws IOException {
+      String exitCodeFile = ContainerLaunch.getExitCodeFile(pidFile.toString());
+      String tmpFile = exitCodeFile + ".tmp";
       DataOutputStream out = null;
       PrintStream pout = null;
       String user = System.getenv("USER");
       try {
-        out = lfs.create(sessionScriptPath, EnumSet.of(CREATE, OVERWRITE));
+        out = lfs.create(executorScriptPath, EnumSet.of(CREATE, OVERWRITE));
         pout = new PrintStream(out, false, "UTF-8");
+        pout.println("#!/usr/bin/env bash");
+        pout.println("bash \"" + sessionScriptPath.toString() + "\"");
+        pout.println("rc=$?");
+        pout.println("echo $rc > \"" + tmpFile + "\"");
+        pout.println("mv -f \"" + tmpFile + "\" \"" + exitCodeFile + "\"");
+        pout.println("exit $rc");
         // We need to do a move as writing to a file is not atomic
         // Process reading a file being written to may get garbled data
         // hence write pid to tmp file first followed by a mv
-        pout.println("#!/usr/bin/env bash");
-        pout.println();
-        String launchContainerCommand;
-        // if user is root , not use self define launchCommand
-        String rootLaunchCommand =
-            dockerCommand + " bash \"" + realSessionScriptPath.toUri().getPath().toString() + "\"";
-        if (user.equals("root")) {
-          launchContainerCommand = rootLaunchCommand;
-        } else {
-          String addUserCommand = getAddUserCommand(user);
-          launchContainerCommand =
-              dockerCommand
-                  + " bash -c \""
-                  + addUserCommand
-                  + " && su "
-                  + user
-                  + " -c "
-                  + realSessionScriptPath.toUri().getPath().toString()
-                  + "\"";
-        }
-        LOG.info("LaunchContainerCommand:" + launchContainerCommand);
-        pout.println(launchContainerCommand);
+
       } finally {
         IOUtils.cleanup(LOG, pout, out);
       }
-      lfs.setPermission(sessionScriptPath, ContainerExecutor.TASK_LAUNCH_SCRIPT_PERMISSION);
+      lfs.setPermission(executorScriptPath, ContainerExecutor.TASK_LAUNCH_SCRIPT_PERMISSION);
     }
+
     /**
      * This method will parse the /etc/passwd in the local and get the uid of specified user ,
      * return the command to create user with the uid in docker container'.
@@ -777,10 +793,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
   /**
    * Initialize the local directories for a particular user.
    *
-   * <ul>
-   *   .mkdir
-   *   <li>$local.dir/usercache/$user
-   * </ul>
+   * <ul> .mkdir <li>$local.dir/usercache/$user </ul>
    */
   void createUserLocalDirs(List<String> localDirs, String user) throws IOException {
     boolean userDirStatus = false;
@@ -806,11 +819,8 @@ public class DockerContainerExecutor extends ContainerExecutor {
   /**
    * Initialize the local cache directories for a particular user.
    *
-   * <ul>
-   *   <li>$local.dir/usercache/$user
-   *   <li>$local.dir/usercache/$user/appcache
-   *   <li>$local.dir/usercache/$user/filecache
-   * </ul>
+   * <ul> <li>$local.dir/usercache/$user <li>$local.dir/usercache/$user/appcache
+   * <li>$local.dir/usercache/$user/filecache </ul>
    */
   void createUserCacheDirs(List<String> localDirs, String user) throws IOException {
     LOG.info("Initializing user " + user);
@@ -856,9 +866,7 @@ public class DockerContainerExecutor extends ContainerExecutor {
   /**
    * Initialize the local directories for a particular user.
    *
-   * <ul>
-   *   <li>$local.dir/usercache/$user/appcache/$appid
-   * </ul>
+   * <ul> <li>$local.dir/usercache/$user/appcache/$appid </ul>
    */
   void createAppDirs(List<String> localDirs, String user, String appId) throws IOException {
     boolean initAppDirStatus = false;
@@ -881,7 +889,9 @@ public class DockerContainerExecutor extends ContainerExecutor {
     }
   }
 
-  /** Create application log directories on all disks. */
+  /**
+   * Create application log directories on all disks.
+   */
   void createContainerLogDirs(String appId, String containerId, List<String> logDirs, String user)
       throws IOException {
 
@@ -907,15 +917,25 @@ public class DockerContainerExecutor extends ContainerExecutor {
     }
   }
 
-  /** Permissions for user dir. $local.dir/usercache/$user */
+  /**
+   * Permissions for user dir. $local.dir/usercache/$user
+   */
   static final short USER_PERM = (short) 0750;
-  /** Permissions for user appcache dir. $local.dir/usercache/$user/appcache */
+  /**
+   * Permissions for user appcache dir. $local.dir/usercache/$user/appcache
+   */
   static final short APPCACHE_PERM = (short) 0710;
-  /** Permissions for user filecache dir. $local.dir/usercache/$user/filecache */
+  /**
+   * Permissions for user filecache dir. $local.dir/usercache/$user/filecache
+   */
   static final short FILECACHE_PERM = (short) 0710;
-  /** Permissions for user app dir. $local.dir/usercache/$user/appcache/$appId */
+  /**
+   * Permissions for user app dir. $local.dir/usercache/$user/appcache/$appId
+   */
   static final short APPDIR_PERM = (short) 0710;
-  /** Permissions for user log dir. $logdir/$user/$appId */
+  /**
+   * Permissions for user log dir. $logdir/$user/$appId
+   */
   static final short LOGDIR_PERM = (short) 0710;
 
   private long getDiskFreeSpace(Path base) throws IOException {
@@ -984,7 +1004,9 @@ public class DockerContainerExecutor extends ContainerExecutor {
     return appStorageDir;
   }
 
-  /** Create application log directories on all disks. */
+  /**
+   * Create application log directories on all disks.
+   */
   void createAppLogDirs(String appId, List<String> logDirs, String user) throws IOException {
 
     boolean appLogDirStatus = false;
@@ -1008,7 +1030,9 @@ public class DockerContainerExecutor extends ContainerExecutor {
     }
   }
 
-  /** @return the list of paths of given local directories */
+  /**
+   * @return the list of paths of given local directories
+   */
   private static List<Path> getPaths(List<String> dirs) {
     List<Path> paths = new ArrayList<Path>(dirs.size());
     for (int i = 0; i < dirs.size(); i++) {
