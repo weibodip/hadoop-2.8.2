@@ -80,7 +80,6 @@ public class ProcessIdFileReader {
                   break;
                 }
               } catch (Exception e) {
-                processId = temp;
               }
             }
           }
