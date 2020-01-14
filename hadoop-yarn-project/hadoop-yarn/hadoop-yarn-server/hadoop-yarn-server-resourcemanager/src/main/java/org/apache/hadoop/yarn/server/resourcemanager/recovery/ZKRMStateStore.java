@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
+ * http://www.apache.org/licenses/LICENSE-2.0
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -20,6 +20,15 @@ package org.apache.hadoop.yarn.server.resourcemanager.recovery;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.curator.framework.CuratorFramework;
@@ -37,12 +46,12 @@ import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.conf.HAUtil;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+import org.apache.hadoop.yarn.proto.YarnProtos.ReservationAllocationStateProto;
 import org.apache.hadoop.yarn.proto.YarnServerCommonProtos.VersionProto;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.AMRMTokenSecretManagerStateProto;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationAttemptStateDataProto;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationStateDataProto;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.EpochProto;
-import org.apache.hadoop.yarn.proto.YarnProtos.ReservationAllocationStateProto;
 import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
 import org.apache.hadoop.yarn.server.records.Version;
 import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
@@ -56,7 +65,6 @@ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.AM
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationAttemptStateDataPBImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationStateDataPBImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.EpochPBImpl;
-import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.data.ACL;
@@ -64,19 +72,9 @@ import org.apache.zookeeper.data.Id;
 import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.server.auth.DigestAuthenticationProvider;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-
 /**
  * {@link RMStateStore} implementation backed by ZooKeeper.
- *
+ * <p>
  * The znode structure is as follows:
  * ROOT_DIR_PATH
  * |--- VERSION_INFO
@@ -91,31 +89,31 @@ import java.util.List;
  * |     ....
  * |
  * |--- RM_DT_SECRET_MANAGER_ROOT
- *        |----- RM_DT_SEQUENTIAL_NUMBER_ZNODE_NAME
- *        |----- RM_DELEGATION_TOKENS_ROOT_ZNODE_NAME
- *        |       |----- Token_1
- *        |       |----- Token_2
- *        |       ....
- *        |
- *        |----- RM_DT_MASTER_KEYS_ROOT_ZNODE_NAME
- *        |      |----- Key_1
- *        |      |----- Key_2
- *                ....
+ * |----- RM_DT_SEQUENTIAL_NUMBER_ZNODE_NAME
+ * |----- RM_DELEGATION_TOKENS_ROOT_ZNODE_NAME
+ * |       |----- Token_1
+ * |       |----- Token_2
+ * |       ....
+ * |
+ * |----- RM_DT_MASTER_KEYS_ROOT_ZNODE_NAME
+ * |      |----- Key_1
+ * |      |----- Key_2
+ * ....
  * |--- AMRMTOKEN_SECRET_MANAGER_ROOT
- *        |----- currentMasterKey
- *        |----- nextMasterKey
- *
+ * |----- currentMasterKey
+ * |----- nextMasterKey
+ * <p>
  * |-- RESERVATION_SYSTEM_ROOT
- *        |------PLAN_1
- *        |      |------ RESERVATION_1
- *        |      |------ RESERVATION_2
- *        |      ....
- *        |------PLAN_2
- *        ....
+ * |------PLAN_1
+ * |      |------ RESERVATION_1
+ * |      |------ RESERVATION_2
+ * |      ....
+ * |------PLAN_2
+ * ....
  * Note: Changes from 1.1 to 1.2 - AMRMTokenSecretManager state has been saved
  * separately. The currentMasterkey and nextMasterkey have been stored.
  * Also, AMRMToken has been removed from ApplicationAttemptState.
- *
+ * <p>
  * Changes from 1.2 to 1.3, Addition of ReservationSystem state.
  */
 @Private
@@ -123,8 +121,8 @@ import java.util.List;
 public class ZKRMStateStore extends RMStateStore {
 
   public static final Log LOG = LogFactory.getLog(ZKRMStateStore.class);
-  private final SecureRandom random = new SecureRandom();
-
+  public static final int CREATE_DELETE_PERMS =
+      ZooDefs.Perms.CREATE | ZooDefs.Perms.DELETE;
   protected static final String ROOT_ZNODE_NAME = "ZKRMStateRoot";
   protected static final Version CURRENT_VERSION_INFO = Version
       .newInstance(1, 3);
@@ -134,8 +132,22 @@ public class ZKRMStateStore extends RMStateStore {
       "RMDTSequentialNumber";
   private static final String RM_DT_MASTER_KEYS_ROOT_ZNODE_NAME =
       "RMDTMasterKeysRoot";
-
-  /** Znode paths */
+  /**
+   * Fencing related variables
+   */
+  private static final String FENCING_LOCK = "RM_ZK_FENCING_LOCK";
+  private final SecureRandom random = new SecureRandom();
+  private final String zkRootNodeAuthScheme =
+      new DigestAuthenticationProvider().getScheme();
+  @VisibleForTesting
+  protected String znodeWorkingPath;
+  @VisibleForTesting
+  protected CuratorFramework curatorFramework;
+  @VisibleForTesting
+  List<ACL> zkRootNodeAcl;
+  /**
+   * Znode paths
+   */
   private String zkRootNodePath;
   private String rmAppRoot;
   private String rmDTSecretManagerRoot;
@@ -144,33 +156,21 @@ public class ZKRMStateStore extends RMStateStore {
   private String dtSequenceNumberPath;
   private String amrmTokenSecretManagerRoot;
   private String reservationRoot;
-  @VisibleForTesting
-  protected String znodeWorkingPath;
-
-  /** Fencing related variables */
-  private static final String FENCING_LOCK = "RM_ZK_FENCING_LOCK";
   private String fencingNodePath;
   private Thread verifyActiveStatusThread;
   private int zkSessionTimeout;
-
-  /** ACL and auth info */
+  /**
+   * ACL and auth info
+   */
   private List<ACL> zkAcl;
-  @VisibleForTesting
-  List<ACL> zkRootNodeAcl;
   private String zkRootNodeUsername;
-  public static final int CREATE_DELETE_PERMS =
-      ZooDefs.Perms.CREATE | ZooDefs.Perms.DELETE;
-  private final String zkRootNodeAuthScheme =
-      new DigestAuthenticationProvider().getScheme();
 
-  @VisibleForTesting
-  protected CuratorFramework curatorFramework;
   /**
    * Given the {@link Configuration} and {@link ACL}s used (zkAcl) for
    * ZooKeeper access, construct the {@link ACL}s for the store's root node.
    * In the constructed {@link ACL}, all the users allowed by zkAcl are given
    * rwa access, while the current RM has exclude create-delete access.
-   *
+   * <p>
    * To be called only when HA is enabled and the configuration doesn't set ACL
    * for the root node.
    */
@@ -409,10 +409,10 @@ public class ZKRMStateStore extends RMStateStore {
     }
     AMRMTokenSecretManagerStatePBImpl stateData =
         new AMRMTokenSecretManagerStatePBImpl(
-          AMRMTokenSecretManagerStateProto.parseFrom(data));
+            AMRMTokenSecretManagerStateProto.parseFrom(data));
     rmState.amrmTokenSecretManagerState =
         AMRMTokenSecretManagerState.newInstance(
-          stateData.getCurrentMasterKey(), stateData.getNextMasterKey());
+            stateData.getCurrentMasterKey(), stateData.getNextMasterKey());
   }
 
   private synchronized void loadRMDTSecretManagerState(RMState rmState)
@@ -560,6 +560,9 @@ public class ZKRMStateStore extends RMStateStore {
       LOG.debug("Storing info for app: " + appId + " at: " + nodeCreatePath);
     }
     byte[] appStateData = appStateDataPB.getProto().toByteArray();
+    if (!checkDataLengthLegal(appStateDataPB, appStateData)) {
+      return;
+    }
     safeCreate(nodeCreatePath, appStateData, zkAcl,
         CreateMode.PERSISTENT);
 
@@ -575,7 +578,9 @@ public class ZKRMStateStore extends RMStateStore {
           + nodeUpdatePath);
     }
     byte[] appStateData = appStateDataPB.getProto().toByteArray();
-
+    if (!checkDataLengthLegal(appStateDataPB, appStateData)) {
+      return;
+    }
     if (exists(nodeUpdatePath)) {
       safeSetData(nodeUpdatePath, appStateData, -1);
     } else {
@@ -618,7 +623,9 @@ public class ZKRMStateStore extends RMStateStore {
           + " at: " + nodeUpdatePath);
     }
     byte[] attemptStateData = attemptStateDataPB.getProto().toByteArray();
-
+    if (!checkDataLengthLegal(attemptStateDataPB, attemptStateData)) {
+      return;
+    }
     if (exists(nodeUpdatePath)) {
       safeSetData(nodeUpdatePath, attemptStateData, -1);
     } else {
@@ -631,7 +638,7 @@ public class ZKRMStateStore extends RMStateStore {
 
   @Override
   public synchronized void removeApplicationStateInternal(
-      ApplicationStateData  appState)
+      ApplicationStateData appState)
       throws Exception {
     String appId = appState.getApplicationSubmissionContext().getApplicationId()
         .toString();
@@ -736,7 +743,7 @@ public class ZKRMStateStore extends RMStateStore {
       LOG.debug("Storing RMDelegationKey_" + delegationKey.getKeyId());
     }
     ByteArrayOutputStream os = new ByteArrayOutputStream();
-    try(DataOutputStream fsOut = new DataOutputStream(os)) {
+    try (DataOutputStream fsOut = new DataOutputStream(os)) {
       delegationKey.write(fsOut);
       safeCreate(nodeCreatePath, os.toByteArray(), zkAcl,
           CreateMode.PERSISTENT);
@@ -919,10 +926,22 @@ public class ZKRMStateStore extends RMStateStore {
     transaction.commit();
   }
 
+  private boolean checkDataLengthLegal(Object dataObj, byte[] data) {
+    //950k
+    if (data.length > 972800) {
+      LOG.warn(
+          "State data length:" + data.length + " larger than 1M, State data:" + dataObj.toString());
+      return false;
+    } else {
+      LOG.debug("State data length is legal");
+      return true;
+    }
+  }
+
   /**
    * Use curator transactions to ensure zk-operations are performed in an all
    * or nothing fashion. This is equivalent to using ZooKeeper#multi.
-   *
+   * <p>
    * TODO (YARN-3774): Curator 3.0 introduces CuratorOp similar to Op. We ll
    * have to rewrite this inner class when we adopt that.
    */
@@ -972,7 +991,7 @@ public class ZKRMStateStore extends RMStateStore {
     public void run() {
       try {
         while (true) {
-          if(isFencedState()) {
+          if (isFencedState()) {
             break;
           }
           // Create and delete fencing node
